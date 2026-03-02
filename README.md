@@ -77,25 +77,6 @@ and then press `Use Selected`.
 8. Remember that ZotGit makes a temporary cache file and when you close your Zotero, it automatically pushes the latest settings to your GitHub repo and then deletes the cache folder. and When you want to read a paper, ZotGit checks if the file is missing and if it is, it pulls the file from GitHub and opens it.
 
 
-
-## FAQ
-
-### Move vs Copy
-
-Most likely, you will want to ```move``` your items. ```move``` is for converting the internal Zotero stored attachments to linked attachments. Files that are moved can be freely converted between linked attachments and stored attachments. ```copy``` is primarily used for copying the attachment into a folder as a backup outside of Zotero. Once a file is copied it is **not** tracked by Zotero anymore and is not easily reimported.
-
-### Migrating from ZotFile
-
-ZotGit should not break any existing linked files from ZotFile. But to be sure, before updating to Zotero 7 [make a local backup of your library](https://www.zotero.org/support/zotero_data#backing_up_your_zotero_data) and of your ZotFile folder.
-
-The ZotGit data directory can be the previous ZotFile directory if you don't mind new files being mixed with the old ones, or a brand new data directory if you like to keep things separate.
-
-For any ZotFile tablet files, you can recover them using the official [ZotFile Recovery plugin](https://github.com/jlegewie/ZotFile-Recovery).
-
-One problem that might arise is the [Linked Attachment Base Directory](https://www.zotero.org/support/preferences/advanced#linked_attachment_base_directory). If you were using this feature before (check in Settings > Advanced > Files and Folders > Linked Attachment Base Directory) you may need to change the base directory to a folder that contains both the ZotFile files and the ZotGit files.
-
-The easiest way to accomplish this is to simply reuse the ZotFile folder or put the ZotGit folder inside the previous ZotFile one. For example, the ZotGit data folder will be `ZotFile/` or `ZotFile/ZotGit/` respectively.
-
 ### Bugs/Feature Requests
 
 Both can be filed [here](https://github.com/Aaronkhodami/ZotGit/issues). Please keep feature requests tightly focused on the extension's core purpose of mooving attachments and linking them! if there is a fatal bug, or your have a feature request that is not directly related to the core purpose of the extension, please file it in the [Email Me directly ](mailto:khodamiaaron@gmail.com)
