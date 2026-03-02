@@ -1,0 +1,82 @@
+name: Build and Release XPI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Generate script definitions
+        shell: pwsh
+        run: python .\script_definition_builder.py
+
+      - name: Read addon version from manifest
+        id: version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Path .\manifest.json -Raw | ConvertFrom-Json
+          $version = [string]$manifest.version
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build XPI package
+        id: package
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $xpiName = "zotgit-$version-fx.xpi"
+          $buildItems = @(
+            'bootstrap.js',
+            'locale',
+            'manifest.json',
+            'prefs.js',
+            'chrome',
+            'preferences',
+            'src',
+            'lib',
+            'init'
+          )
+
+          if (Test-Path $xpiName) {
+            Remove-Item $xpiName -Force
+          }
+
+          Compress-Archive -Path $buildItems -DestinationPath $xpiName -CompressionLevel Optimal -Force
+
+          "xpi_name=$xpiName" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zotgit-xpi-${{ steps.version.outputs.version }}
+          path: ${{ steps.package.outputs.xpi_name }}
+
+      - name: Publish/Update GitHub Release (ci-latest)
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ci-latest
+          name: ZotGit CI Latest
+          body: |
+            Automated build from commit ${{ github.sha }}.
+            Version from manifest: ${{ steps.version.outputs.version }}
+          allowUpdates: true
+          replacesArtifacts: true
+          prerelease: true
+          artifacts: ${{ steps.package.outputs.xpi_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}

@@ -12,6 +12,18 @@ ZotGit can:
 [Download the latest release here](releases/latest)
 Steps to install and properly use ZotGit:
 
+1. Install Zotero 7 or later
+2. Install ZotGit from the downloaded .xpi file (drag and drop into Zotero or use `Tools -> Add-ons -> Install Add-on From File`)
+3. In Zotero, go to `Settings -> ZotGit Settings`
+
+Here you will see few options which help you better use them:
+
+ - ` Enable Github Sync`: Enables syncing settings and PDFs through GitHub
+ - `Automatically Pull on Startup`: Pulls settings on Zotero startup
+ - `Automatically Push Every 10 Minutes`: Pushes settings every 10 minutes; failed auto-push retries in 5 minutes; if you close the Zotero before a push or 10 minutes, ZotGit automatically pushes the latest settings on shutdown
+ - `Remote PDF Mode`: With this enabled, GitHub is the persistent PDF source; pull skips bulk PDF download; PDFs are recalled on-demand when opening missing files; ZotGit performs a final push on shutdown, then removes the temporary cache folder
+
+
 4. If planning to sync across multiple devices, set the [Linked Attachment Base Directory](https://www.zotero.org/support/preferences/advanced#linked_attachment_base_directory) to the synced folder on each computer.
 
 ## Settings
