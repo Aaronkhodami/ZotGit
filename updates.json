@@ -1,10 +1,10 @@
 {
   "addons": {
-    "zotmoov@wileyy.com": {
+    "zotgit@khodami.com": {
       "updates": [
         {
-          "version": "1.2.25",
-          "update_link": "https://github.com/wileyyugioh/zotmoov/releases/download/1.2.25/zotmoov-1.2.25-fx.xpi",
+          "version": "0.0.9",
+          "update_link": "",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999",

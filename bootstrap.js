@@ -8,6 +8,7 @@ let zotmoovMenus = null;
 let zotmoovBindings = null;
 let zotmoovSync = null;
 let chromeHandle = null;
+let syncFinalized = false;
 
 function log(msg)
 {
@@ -29,6 +30,8 @@ async function install()
 
 async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
 {
+    Zotero.debug('ZotGit Bootstrap: startup begin id=' + id + ' version=' + version + ' rootURI=' + rootURI);
+
     // Only ones we need to load directly here
     Services.scriptloader.loadSubScript(rootURI + 'init/00-script-definitions.js');
     Services.scriptloader.loadSubScript(rootURI + 'init/01-script-loader.js');
@@ -59,30 +62,33 @@ async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
     Zotero.PreferencePanes.register(
         {
             id: 'zotmoov_basic',
-            pluginID: 'zotmoov@wileyy.com',
+            pluginID: 'zotgit@khodami.com',
             src: rootURI + 'preferences/prefs.xhtml',
             scripts: [rootURI + 'preferences/zotmoov-prefs.js'],
             helpURL: rootURI + 'docs/SETTINGS_INFO.md'
     });
+    Zotero.debug('ZotGit Bootstrap: registered preference pane zotmoov_basic');
 
     Zotero.PreferencePanes.register(
         {
             id: 'zotmoov_advanced',
-            pluginID: 'zotmoov@wileyy.com',
+            pluginID: 'zotgit@khodami.com',
             parent: 'zotmoov_basic',
             src: rootURI + 'preferences/adv_prefs.xhtml',
             scripts: [rootURI + 'preferences/zotmoov-adv-prefs.js'],
             helpURL: rootURI + 'docs/SETTINGS_INFO.md'
     });
+    Zotero.debug('ZotGit Bootstrap: registered preference pane zotmoov_advanced');
 
     Zotero.PreferencePanes.register(
         {
             id: 'zotmoov_keyboard',
-            pluginID: 'zotmoov@wileyy.com',
+            pluginID: 'zotgit@khodami.com',
             parent: 'zotmoov_basic',
             src: rootURI + 'preferences/keyboard_shortcuts.xhtml',
             scripts: [rootURI + 'preferences/zotmoov-keyboard-prefs.js']
     });
+    Zotero.debug('ZotGit Bootstrap: registered preference pane zotmoov_keyboard');
 
     // Need to expose our addon to rest of Zotero
     Zotero.ZotMoov = zotmoov;
@@ -94,6 +100,7 @@ async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
     if (Zotero.Prefs.get('extensions.zotmoov.sync.github.enabled', true)
         && Zotero.Prefs.get('extensions.zotmoov.sync.github.auto_pull', true))
     {
+        Zotero.debug('ZotGit Bootstrap: auto-pull on startup is enabled; pulling from GitHub');
         await zotmoovSync.pullFromGitHub({ refreshMenus: false });
     }
 
@@ -115,9 +122,12 @@ async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
     chromeHandle = aomStartup.registerChrome(manifestURI, [
         ['content', 'zotmoov', 'chrome/content/']
     ]);
+
+    Zotero.debug('ZotGit Bootstrap: startup complete');
 }
 
 function onMainWindowLoad({ window }) {
+    Zotero.debug('ZotGit Bootstrap: onMainWindowLoad');
     if (zotmoovBindings && typeof zotmoovBindings.patchWindow == 'function')
     {
         zotmoovBindings.patchWindow(window);
@@ -126,16 +136,40 @@ function onMainWindowLoad({ window }) {
 }
 
 function onMainWindowUnload({ window }) {
+    Zotero.debug('ZotGit Bootstrap: onMainWindowUnload');
     zotmoovMenus.unload(window);
+
+    if (!zotmoovSync || syncFinalized) return;
+
+    try
+    {
+        const remainingWindows = Zotero.getMainWindows().filter(win => win && win !== window);
+        if (remainingWindows.length > 0) return;
+
+        syncFinalized = true;
+        Zotero.debug('ZotGit Shutdown: last main window unloading, running final sync + cache cleanup');
+        zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true }).catch((e) => {
+            Zotero.logError(e);
+        });
+    }
+    catch (e)
+    {
+        Zotero.logError(e);
+    }
 }
 
 async function shutdown()
 {
     log('ZotMoov: Shutting down');
+    Zotero.debug('ZotGit Bootstrap: shutdown begin (syncFinalized=' + syncFinalized + ')');
 
     try
     {
-        if (zotmoovSync) await zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true });
+        if (zotmoovSync && !syncFinalized)
+        {
+            syncFinalized = true;
+            await zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true });
+        }
     }
     catch (e)
     {
@@ -174,7 +208,10 @@ async function shutdown()
     zotmoovMenus = null;
     zotmoovBindings = null;
     zotmoovSync = null;
+    syncFinalized = false;
     Zotero.ZotMoov = null;
+
+    Zotero.debug('ZotGit Bootstrap: shutdown complete');
 }
 
 function uninstall()

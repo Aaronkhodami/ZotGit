@@ -94,7 +94,9 @@ else {
 
 $manifest.version = $newVersion
 $manifest.author = 'Khodami Aaron'
-$manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
+$manifestJson = $manifest | ConvertTo-Json -Depth 20
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, $utf8NoBom)
 
 $definitionBuilderPath = Join-Path $PSScriptRoot 'script_definition_builder.py'
 if (Test-Path $definitionBuilderPath) {
