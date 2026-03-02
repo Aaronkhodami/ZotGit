@@ -1,0 +1,130 @@
+<!--
+    ZotMoov
+    prefs.xhtml
+    Author: Khodami Aaron
+-->
+
+<linkset>
+    <html:link rel="localization" href="zotmoov.ftl"/>
+</linkset>
+
+<vbox onload="Zotero.ZotMoov.Prefs.init();">
+    <groupbox>
+        <vbox>
+            <label><html:h2 data-l10n-id="zotmoov-settings-filepath-intro"></html:h2></label>
+            <hbox align="center">
+                <html:input type="text" id="zotmoov-dst-dir" readonly="true" preference="extensions.zotmoov.dst_dir" style="flex: 1; margin-left: 0;"/>
+                <button id="zotmoov-dst-dir-button" data-l10n-id="zotmoov-settings-filepath-button-label" oncommand="Zotero.ZotMoov.Prefs.pickDirectory();"/>
+            </hbox>
+            <label id="zotmoov-dst-dir-remote-note" data-l10n-id="zotmoov-settings-filepath-remote-note" hidden="true"/>
+        </vbox>
+    </groupbox>
+    <groupbox>
+        <vbox>
+            <label><html:h2 data-l10n-id="zotmoov-settings-other-settings"></html:h2></label>
+            <hbox align="center">
+                <label data-l10n-id="zotmoov-settings-behavior-explanation"></label>
+                <menulist native="true" preference="extensions.zotmoov.file_behavior">
+                    <menupopup>
+                        <menuitem data-l10n-id="zotmoov-settings-behavior-move" value="move" oncommand="Zotero.ZotMoov.Prefs.updateMenuItems(this);"/>
+                        <menuitem data-l10n-id="zotmoov-settings-behavior-copy" value="copy" oncommand="Zotero.ZotMoov.Prefs.updateMenuItems(this);"/>
+                    </menupopup>
+                </menulist>
+            </hbox>
+            <checkbox native="true" preference="extensions.zotmoov.enable_automove" data-l10n-id="zotmoov-settings-enable-automove-label"/>
+            <vbox>
+                <checkbox native="true" preference="extensions.zotmoov.enable_subdir_move" data-l10n-id="zotmoov-settings-enable-subdir-move-label" oncommand="Zotero.ZotMoov.Prefs.onSubDirClick(this);"/>
+                <hbox align="center" style="margin-left: 30px;">
+                    <label for="zotmoov-subdir-str" data-l10n-id="zotmoov-settings-subdir-str"/>
+                    <html:input type="text" data-l10n-id="zotmoov-settings-subdir-str" id="zotmoov-subdir-str" preference="extensions.zotmoov.subdirectory_string" style="flex: 1;" placeholder="%c"/>
+                    <label is="zotero-text-link" data-l10n-id="zotmoov-settings-subdir-about" href="https://github.com/wileyyugioh/zotmoov/blob/master/docs/WILDCARD_INFO.md"/>
+                </hbox>
+            </vbox>
+            <checkbox native="true" preference="extensions.zotmoov.delete_files" data-l10n-id="zotmoov-settings-delete-files-label"/>
+        </vbox>
+    </groupbox>
+    <groupbox>
+        <vbox>
+            <label><html:h2 data-l10n-id="zotmoov-settings-fileext-title"></html:h2></label>
+            <hbox class="virtualized-table-container" style="display: flex; min-height: 100px; max-height: 100px;">
+                <html:div id="zotmoov-settings-fileext-tree-2"/>
+            </hbox>
+            <separator class="thin"/>
+            <hbox align="center" pack="end">
+                <label data-l10n-id="zotmoov-settings-fileext-about"></label>
+                <spacer flex="1"/>
+                <button id="zotmoov-fileext-table-delete" disabled="true" label="-" style="min-width: 80px; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.removeFileExtEntries();"/>
+                <button id="zotmoov-fileext-table-add" label="+" style="min-width: 80px;" oncommand="Zotero.ZotMoov.Prefs.spawnFileExtDialog();"/>
+            </hbox>
+        </vbox>
+    </groupbox>
+    <groupbox>
+        <vbox>
+            <label><html:h2 data-l10n-id="zotmoov-adv-settings-sync-title"></html:h2></label>
+            <checkbox native="true" preference="extensions.zotmoov.sync.github.enabled" data-l10n-id="zotmoov-adv-settings-sync-enabled"/>
+            <checkbox native="true" preference="extensions.zotmoov.sync.github.auto_pull" data-l10n-id="zotmoov-adv-settings-sync-auto-pull"/>
+            <checkbox native="true" preference="extensions.zotmoov.sync.github.auto_push" data-l10n-id="zotmoov-adv-settings-sync-auto-push"
+                oncommand="Zotero.ZotMoov.Prefs.syncAutoPushToggled();"/>
+            <checkbox native="true" preference="extensions.zotmoov.sync.github.remote_pdf_mode" data-l10n-id="zotmoov-adv-settings-sync-remote-mode"
+                oncommand="Zotero.ZotMoov.Prefs.syncRemoteModeToggled();"/>
+            <hbox align="center">
+                <label data-l10n-id="zotmoov-adv-settings-sync-repo"/>
+                <html:input type="text" id="zotmoov-settings-sync-repo-input" style="flex: 1;" placeholder="owner/repo"
+                    oninput="Zotero.ZotMoov.Prefs.syncRepositoryInputChanged(this.value);"/>
+            </hbox>
+            <hbox align="center">
+                <button id="zotmoov-settings-sync-load-repos" data-l10n-id="zotmoov-adv-settings-sync-load-repos" style="min-width: 120px; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncLoadRepositories();"/>
+                <menulist id="zotmoov-settings-sync-repo-picker" style="flex: 1; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncUseSelectedRepository();">
+                    <menupopup id="zotmoov-settings-sync-repo-picker-popup"/>
+                </menulist>
+                <button id="zotmoov-settings-sync-use-repo" data-l10n-id="zotmoov-adv-settings-sync-use-repo" style="min-width: 120px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncUseSelectedRepository();"/>
+            </hbox>
+            <hbox align="center">
+                <label data-l10n-id="zotmoov-adv-settings-sync-branch"/>
+                <html:input type="text" id="zotmoov-settings-sync-branch-input" preference="extensions.zotmoov.sync.github.branch" style="flex: 1;" placeholder="main"
+                    oninput="Zotero.Prefs.set('extensions.zotmoov.sync.github.branch', this.value, true);"/>
+            </hbox>
+            <hbox align="center">
+                <label data-l10n-id="zotmoov-adv-settings-sync-filepath"/>
+                <html:input type="text" id="zotmoov-settings-sync-filepath-input" preference="extensions.zotmoov.sync.github.filepath" style="flex: 1;" placeholder="zotgit-settings.json"
+                    oninput="Zotero.Prefs.set('extensions.zotmoov.sync.github.filepath', this.value, true);"/>
+            </hbox>
+            <hbox align="center">
+                <label data-l10n-id="zotmoov-adv-settings-sync-token"/>
+                <html:input type="text" id="zotmoov-settings-sync-token-input" preference="extensions.zotmoov.sync.github.token" style="flex: 1;"
+                    oninput="Zotero.Prefs.set('extensions.zotmoov.sync.github.token', this.value, true);"/>
+            </hbox>
+            <hbox align="center" pack="end">
+                <button id="zotmoov-settings-sync-open-token-page" data-l10n-id="zotmoov-adv-settings-sync-open-token-page" style="min-width: 140px; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncOpenTokenSetup();"/>
+                <button id="zotmoov-settings-sync-check-auth" data-l10n-id="zotmoov-adv-settings-sync-check-auth" style="min-width: 140px; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncCheckAuth();"/>
+                <button id="zotmoov-settings-sync-create-repo" data-l10n-id="zotmoov-adv-settings-sync-create-repo" style="min-width: 140px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncCreateRepository();"/>
+            </hbox>
+            <hbox align="center" pack="end">
+                <label id="zotmoov-settings-sync-status" data-l10n-id="zotmoov-adv-settings-sync-status-idle" style="margin-right: auto;"/>
+                <button id="zotmoov-settings-sync-pull" data-l10n-id="zotmoov-adv-settings-sync-pull" style="min-width: 100px; margin-inline-end: 6px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncPullFromGitHub();"/>
+                <button id="zotmoov-settings-sync-push" data-l10n-id="zotmoov-adv-settings-sync-push" style="min-width: 100px;"
+                    oncommand="Zotero.ZotMoov.Prefs.syncPushToGitHub();"/>
+            </hbox>
+        </vbox>
+    </groupbox>
+    <groupbox style="margin-top: 20px;">
+        <hbox align="center" pack="end">
+            <button
+                style="margin-inline-end: 6px;"
+                data-l10n-id="zotmoov-kb-settings-keyboard-shortcuts"
+                oncommand="Zotero.Utilities.Internal.openPreferences('zotmoov_keyboard');"/>
+            <button id="zotmoov-adv-prefs-button"
+                data-l10n-id="zotmoov-settings-advanced-config"
+                oncommand="Zotero.Utilities.Internal.openPreferences('zotmoov_advanced');"
+            />
+        </hbox>
+    </groupbox>
+</vbox>
