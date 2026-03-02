@@ -1,4 +1,6 @@
 # ZotGit
+
+![ZotGit Logo](docs/res/ZotGitLogo.jpg)
 A *simple* plugin for managing attachments in Zotero 7
 
 ## ℹ️ About ZotGit foundation
