@@ -1,6 +1,8 @@
 # ZotGit
 A *simple* plugin for managing attachments in Zotero 7
 
+ZotGit is based on the foundation of [ZotMoov](https://github.com/wileyyugioh/zotmoov).
+
 ZotGit can:
 - Automatically move/copy imported attachments into a custom directory
 - Manually move/copy imported attachments to/from a custom directory via right-clicking
