@@ -10,16 +10,8 @@ ZotGit can:
 ## Installation
 
 [Download the latest release here](releases/latest)
-- If using Firefox you have to right click the .xpi and save link as.
+Steps to install and properly use ZotGit:
 
-And set the ZotGit directory to the folder you want to move/copy files to.
-
-<img src="docs/res/Image2.png" width="500"/>
-
-It is highly recommended to
-1. **[Make a local backup before mooving your library](https://www.zotero.org/support/zotero_data#backing_up_your_zotero_data)**
-2. Give ZotGit its own folder that other applications will not alter
-3. Uncheck "Sync attachment files in My Library" in the Sync settings if you do not plan to use Zotero's cloud file storage
 4. If planning to sync across multiple devices, set the [Linked Attachment Base Directory](https://www.zotero.org/support/preferences/advanced#linked_attachment_base_directory) to the synced folder on each computer.
 
 ## Settings
