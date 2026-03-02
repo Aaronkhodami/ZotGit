@@ -12,6 +12,8 @@ var ZotMoovBindings = class {
         this._orig_funcs = [];
         this._del_ignore = [];
         this._windowPatched = new WeakSet();
+        this._recallScopeDepth = 0;
+        this._allowedRecallItemIDs = new Set();
 
         this.lock = this._callback.lock.bind(this._callback);
 
@@ -100,6 +102,9 @@ var ZotMoovBindings = class {
 
                         if (!this.isFileAttachment || !this.isFileAttachment()) return path;
 
+                        if (self._recallScopeDepth <= 0) return path;
+                        if (!self._allowedRecallItemIDs.has(this.id)) return path;
+
                         const sync = Zotero.ZotMoov && Zotero.ZotMoov.Sync ? Zotero.ZotMoov.Sync : null;
                         if (!sync || typeof sync.ensureAttachmentLocal != 'function') return path;
                         if (typeof sync.isRemotePDFModeEnabled == 'function' && !sync.isRemotePDFModeEnabled()) return path;
@@ -136,6 +141,28 @@ var ZotMoovBindings = class {
         }
     }
 
+    async _withRecallScope(allowedItems, func)
+    {
+        this._recallScopeDepth += 1;
+        let previousAllowed = this._allowedRecallItemIDs;
+        this._allowedRecallItemIDs = new Set(previousAllowed);
+
+        for (let item of allowedItems)
+        {
+            if (item && item.id) this._allowedRecallItemIDs.add(item.id);
+        }
+
+        try
+        {
+            return await func();
+        }
+        finally
+        {
+            this._allowedRecallItemIDs = previousAllowed;
+            this._recallScopeDepth = Math.max(0, this._recallScopeDepth - 1);
+        }
+    }
+
     async _resolveAttachmentItems(input, collector)
     {
         if (!input) return;
@@ -162,24 +189,8 @@ var ZotMoovBindings = class {
             return;
         }
 
-        if (input.getAttachments && typeof input.getAttachments == 'function')
-        {
-            let attachmentIDs = [];
-            try
-            {
-                attachmentIDs = input.getAttachments();
-            }
-            catch (e)
-            {
-                attachmentIDs = [];
-            }
-
-            for (let id of attachmentIDs)
-            {
-                const child = await Zotero.Items.getAsync(id);
-                await this._resolveAttachmentItems(child, collector);
-            }
-        }
+        // Do not expand parent items into all attachments here.
+        // Strict recall must only prefetch explicitly requested attachment items.
     }
 
     async _prefetchAttachmentsForOpen(args, openContext = null)
@@ -214,6 +225,8 @@ var ZotMoovBindings = class {
             }
         }
 
+        if (!items.length) return;
+
         const seen = new Set();
         const uniqueItems = [];
         for (let item of items)
@@ -235,6 +248,8 @@ var ZotMoovBindings = class {
                 Zotero.logError(e);
             }
         }
+
+        return uniqueItems;
     }
 
     patchWindow(window)
@@ -258,8 +273,10 @@ var ZotMoovBindings = class {
                     let self = this;
                     return async function(...args)
                     {
-                        await self._prefetchAttachmentsForOpen(args, this);
-                        return await orig.apply(this, args);
+                        const allowedItems = await self._prefetchAttachmentsForOpen(args, this) || [];
+                        return await self._withRecallScope(allowedItems, async () => {
+                            return await orig.apply(this, args);
+                        });
                     };
                 });
             }
@@ -277,6 +294,7 @@ var ZotMoovBindings = class {
     {
         Zotero.Notifier.unregisterObserver(this._notifierID);
         this._callback.destroy();
+        this._del_queue.destroy();
         this._patcher.disable();
     }
 }

@@ -37,6 +37,8 @@ var ZotMoovGitHubSync = class {
         this._pushInProgress = false;
         this._pushPromise = null;
         this._destroyed = false;
+        this._shutdownCleanupInProgress = false;
+        this._attachmentRecallInFlight = new Map();
 
         // Capture the cache path NOW while Zotero is fully alive.
         // Zotero.DataDirectory may be unavailable at shutdown time.
@@ -148,7 +150,7 @@ var ZotMoovGitHubSync = class {
                 // Now remove the directory tree, retrying briefly on Windows shutdown file locks.
                 let removed = false;
                 let lastError = null;
-                for (let attempt = 0; attempt < 3; attempt++)
+                for (let attempt = 0; attempt < 10; attempt++)
                 {
                     try
                     {
@@ -161,12 +163,35 @@ var ZotMoovGitHubSync = class {
                         lastError = e;
                     }
 
-                    await this._delay(250 * (attempt + 1));
+                    await this._delay(300 * (attempt + 1));
                 }
 
                 if (!removed && lastError)
                 {
-                    throw lastError;
+                    try
+                    {
+                        const remainingChildren = await IOUtils.getChildren(cacheDir).catch(() => []);
+                        for (let child of remainingChildren)
+                        {
+                            try
+                            {
+                                await IOUtils.remove(child, { recursive: true, ignoreAbsent: true });
+                            }
+                            catch (e) {}
+                        }
+
+                        await IOUtils.remove(cacheDir, { recursive: true, ignoreAbsent: true });
+                        removed = !(await IOUtils.exists(cacheDir));
+                    }
+                    catch (e)
+                    {
+                        lastError = e;
+                    }
+
+                    if (!removed)
+                    {
+                        throw lastError;
+                    }
                 }
 
                 this._emitProgress(onProgress, 'Shutdown: removed cache directory ' + cacheDir);
@@ -176,6 +201,15 @@ var ZotMoovGitHubSync = class {
                 this._debugger.warn('Cache cleanup failed for ' + cacheDir + ': ' + e.message);
             }
         }
+    }
+
+    async _awaitInFlightAttachmentRecalls(onProgress = null)
+    {
+        const inFlight = Array.from(this._attachmentRecallInFlight.values());
+        if (!inFlight.length) return;
+
+        this._emitProgress(onProgress, 'Shutdown: waiting for ' + inFlight.length + ' in-flight recall download(s)');
+        await Promise.allSettled(inFlight);
     }
 
     async destroy({ pushOnShutdown = false, cleanupCacheOnShutdown = false, onProgress = null } = {})
@@ -222,7 +256,16 @@ var ZotMoovGitHubSync = class {
         if (cleanupCacheOnShutdown)
         {
             Zotero.debug('ZotGit Shutdown: cleaning cache (remotePDFMode=' + remotePDFMode + ' pushSucceeded=' + pushSucceeded + ')');
-            await this.cleanupRemoteCacheOnShutdown();
+            this._shutdownCleanupInProgress = true;
+            try
+            {
+                await this._awaitInFlightAttachmentRecalls(onProgress);
+                await this.cleanupRemoteCacheOnShutdown();
+            }
+            finally
+            {
+                this._shutdownCleanupInProgress = false;
+            }
         }
     }
 
@@ -622,6 +665,12 @@ var ZotMoovGitHubSync = class {
 
     async ensureAttachmentLocal(item, onProgress = null)
     {
+        if (this._destroyed || this._shutdownCleanupInProgress)
+        {
+            Zotero.debug('ZotGit Recall: skipped – shutdown is in progress');
+            return null;
+        }
+
         if (!this.isRemotePDFModeEnabled())
         {
             Zotero.debug('ZotGit Recall: skipped – remote PDF mode is disabled');
@@ -682,58 +731,34 @@ var ZotMoovGitHubSync = class {
             return null;
         }
 
-        try
+        const inFlight = this._attachmentRecallInFlight.get(localPath);
+        if (inFlight)
         {
-            // File already in cache – return its path directly
-            if (await IOUtils.exists(localPath))
-            {
-                Zotero.debug('ZotGit Recall: cache hit – ' + localPath);
-                return localPath;
-            }
-        }
-        catch (e)
-        {
-            // continue to download
+            Zotero.debug('ZotGit Recall: waiting for in-flight download of ' + relative);
+            return await inFlight;
         }
 
-        Zotero.debug('ZotGit Recall: cache miss – need to download ' + relative + ' to ' + localPath);
-
-        let remotePath = this._joinRemotePath(this._getPDFRootPath(), relative);
-        this._emitProgress(onProgress, 'Recall: downloading ' + relative);
-
-        let remoteFile = null;
-        try
-        {
-            remoteFile = await this._requestJSON(this._buildRepoContentsUrl(config, remotePath, true), {
-                method: 'GET',
-                headers: this._getHeaders(config.token)
-            }, onProgress);
-        }
-        catch (e)
-        {
-            Zotero.debug('ZotGit Recall: direct path fetch failed (HTTP ' + (e.status || '?') + ') for ' + remotePath + ' – ' + e.message);
-
-            // For any fetch failure, try searching by filename as fallback
-            const filename = this._getPathBasename(relative);
-            this._emitProgress(onProgress, 'Recall: searching by filename ' + filename);
-            let matchedRemotePath = null;
+        const recallPromise = (async () => {
             try
             {
-                matchedRemotePath = await this._findRemotePDFPathByFilename(config, filename, onProgress);
+                // File already in cache – return its path directly
+                if (await IOUtils.exists(localPath))
+                {
+                    Zotero.debug('ZotGit Recall: cache hit – ' + localPath);
+                    return localPath;
+                }
             }
-            catch (searchErr)
+            catch (e)
             {
-                Zotero.debug('ZotGit Recall: filename search also failed – ' + searchErr.message);
+                // continue to download
             }
 
-            if (!matchedRemotePath)
-            {
-                Zotero.debug('ZotGit Recall: could not locate ' + filename + ' in remote repo');
-                return null;
-            }
+            Zotero.debug('ZotGit Recall: cache miss – need to download ' + relative + ' to ' + localPath);
 
-            Zotero.debug('ZotGit Recall: found via filename search at ' + matchedRemotePath);
-            remotePath = matchedRemotePath;
+            const remotePath = this._joinRemotePath(this._getPDFRootPath(), relative);
+            this._emitProgress(onProgress, 'Recall: downloading ' + relative);
+
+            let remoteFile = null;
             try
             {
                 remoteFile = await this._requestJSON(this._buildRepoContentsUrl(config, remotePath, true), {
@@ -741,34 +766,48 @@ var ZotMoovGitHubSync = class {
                     headers: this._getHeaders(config.token)
                 }, onProgress);
             }
-            catch (e2)
+            catch (e)
             {
-                Zotero.debug('ZotGit Recall: download of fallback path also failed – ' + e2.message);
+                Zotero.debug('ZotGit Recall: direct path fetch failed (HTTP ' + (e.status || '?') + ') for ' + remotePath + ' – ' + e.message);
                 return null;
             }
-        }
 
-        if (!remoteFile || !remoteFile.content)
-        {
-            Zotero.debug('ZotGit Recall: remote file response empty for ' + remotePath);
-            return null;
-        }
+            const bytes = await this._getRemoteFileBytes(remoteFile, remotePath, config, onProgress);
+            if (!bytes)
+            {
+                Zotero.debug('ZotGit Recall: remote file response empty for ' + remotePath);
+                return null;
+            }
 
-        const bytes = this._base64ToUint8(remoteFile.content);
-        const parentDir = PathUtils.parent(localPath);
+            const parentDir = PathUtils.parent(localPath);
+            try
+            {
+                await IOUtils.makeDirectory(parentDir, { createAncestors: true });
+            }
+            catch (e)
+            {
+                // already exists
+            }
+
+            await IOUtils.write(localPath, bytes);
+            Zotero.debug('ZotGit Recall: successfully wrote ' + bytes.length + ' bytes to ' + localPath);
+
+            return localPath;
+        })();
+
+        this._attachmentRecallInFlight.set(localPath, recallPromise);
+
         try
         {
-            await IOUtils.makeDirectory(parentDir, { createAncestors: true });
+            return await recallPromise;
         }
-        catch (e)
+        finally
         {
-            // already exists
+            if (this._attachmentRecallInFlight.get(localPath) === recallPromise)
+            {
+                this._attachmentRecallInFlight.delete(localPath);
+            }
         }
-
-        await IOUtils.write(localPath, bytes);
-        Zotero.debug('ZotGit Recall: successfully wrote ' + bytes.length + ' bytes to ' + localPath);
-
-        return localPath;
     }
 
     async _pullPDFFiles(config, onProgress = null)
@@ -800,9 +839,8 @@ var ZotMoovGitHubSync = class {
                 headers: this._getHeaders(config.token)
             }, onProgress);
 
-            if (!remoteFile || !remoteFile.content) continue;
-
-            const bytes = this._base64ToUint8(remoteFile.content);
+            const bytes = await this._getRemoteFileBytes(remoteFile, remotePath, config, onProgress);
+            if (!bytes) continue;
             const localPath = this._remoteRelativeToLocal(baseDir, relative);
             const parentDir = PathUtils.parent(localPath);
 
@@ -1178,6 +1216,114 @@ var ZotMoovGitHubSync = class {
         }
 
         return body;
+    }
+
+    async _requestBytes(url, options, onProgress = null)
+    {
+        const hasAbortController = (typeof AbortController != 'undefined');
+        const controller = hasAbortController ? new AbortController() : null;
+        let hardTimeoutID = null;
+
+        let response = null;
+
+        try
+        {
+            this._emitProgress(onProgress, 'Request(bytes): ' + (options.method || 'GET') + ' ' + url);
+
+            const timeoutPromise = new Promise((_, reject) => {
+                hardTimeoutID = setTimeout(() => {
+                    if (controller) controller.abort();
+                    reject(new Error('GitHub byte request timed out after 30 seconds'));
+                }, this.constructor.REQUEST_TIMEOUT_MS);
+            });
+
+            const fetchOptions = {
+                ...options
+            };
+            if (controller) fetchOptions.signal = controller.signal;
+
+            response = await Promise.race([
+                fetch(url, fetchOptions),
+                timeoutPromise
+            ]);
+
+            this._emitProgress(onProgress, 'Response(bytes): HTTP ' + response.status);
+        }
+        catch (e)
+        {
+            if (e && e.name == 'AbortError')
+            {
+                throw new Error('GitHub byte request timed out after 30 seconds');
+            }
+
+            throw e;
+        }
+        finally
+        {
+            if (hardTimeoutID) clearTimeout(hardTimeoutID);
+        }
+
+        if (!response.ok)
+        {
+            const error = new Error('GitHub byte request failed (' + response.status + ')');
+            error.status = response.status;
+            throw error;
+        }
+
+        const arrayBuffer = await response.arrayBuffer();
+        return new Uint8Array(arrayBuffer);
+    }
+
+    async _getRemoteFileBytes(remoteFile, remotePath, config, onProgress = null)
+    {
+        if (!remoteFile) return null;
+
+        if (remoteFile.content)
+        {
+            return this._base64ToUint8(remoteFile.content);
+        }
+
+        if (remoteFile.download_url)
+        {
+            Zotero.debug('ZotGit Recall: no inline content for ' + remotePath + '; using download_url');
+            try
+            {
+                return await this._requestBytes(remoteFile.download_url, {
+                    method: 'GET',
+                    headers: {
+                        'Accept': 'application/octet-stream',
+                        'Authorization': 'Bearer ' + config.token
+                    }
+                }, onProgress);
+            }
+            catch (e)
+            {
+                Zotero.debug('ZotGit Recall: download_url fetch failed for ' + remotePath + ' – ' + e.message);
+            }
+        }
+
+        if (remoteFile.git_url)
+        {
+            Zotero.debug('ZotGit Recall: trying git_url blob fallback for ' + remotePath);
+            try
+            {
+                const blob = await this._requestJSON(remoteFile.git_url, {
+                    method: 'GET',
+                    headers: this._getHeaders(config.token)
+                }, onProgress);
+
+                if (blob && blob.content)
+                {
+                    return this._base64ToUint8(blob.content);
+                }
+            }
+            catch (e)
+            {
+                Zotero.debug('ZotGit Recall: git_url blob fallback failed for ' + remotePath + ' – ' + e.message);
+            }
+        }
+
+        return null;
     }
 
     _toGitHubContentPath(path)

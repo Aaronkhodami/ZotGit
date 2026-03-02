@@ -1,1 +1,4 @@
-Get-Content manifest.json | Select-String -Pattern '\"version\": \"([^\"]+)\"' | Select-Object -First 1 | ForEach-Object { $_.Matches.Groups[1].Value }
+$manifest = Get-Content -Path manifest.json -Raw | ConvertFrom-Json
+if ($null -ne $manifest.version) {
+	[string]$manifest.version
+}

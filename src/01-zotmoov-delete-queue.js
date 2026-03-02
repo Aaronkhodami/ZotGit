@@ -31,7 +31,7 @@ var ZotMoovDeleteQueue = class {
 
         if (items.length == 0) return;
 
-        this._zotmoov.delete(items, Zotero.Prefs.get('extensions.zotmoov.dst_dir', true),
+        await this._zotmoov.delete(items, Zotero.Prefs.get('extensions.zotmoov.dst_dir', true),
             {
                 prune_empty_dir: Zotero.Prefs.get('extensions.zotmoov.prune_empty_dir', true),
                 max_io: Zotero.Prefs.get('extensions.zotmoov.max_io_concurrency', true)
@@ -68,6 +68,7 @@ var ZotMoovDeleteQueue = class {
     {
         clearTimeout(this._timeoutID);
         this._timeoutID = 0;
+        this._items = [];
     }
 }
 

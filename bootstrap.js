@@ -9,10 +9,49 @@ let zotmoovBindings = null;
 let zotmoovSync = null;
 let chromeHandle = null;
 let syncFinalized = false;
+let syncFinalizePromise = null;
 
 function log(msg)
 {
     Zotero.debug('ZotMoov: ' + msg);
+}
+
+function getCacheDirCandidates()
+{
+    const dirs = new Set();
+    try
+    {
+        const dataDir = (Zotero.DataDirectory && Zotero.DataDirectory.dir) ? Zotero.DataDirectory.dir : '';
+        if (dataDir)
+        {
+            dirs.add(PathUtils.join(dataDir, 'zotgit-cache'));
+            dirs.add(PathUtils.join(dataDir, 'zogit-cache'));
+        }
+    }
+    catch (e) {}
+
+    return Array.from(dirs).filter(Boolean);
+}
+
+function forceRemoveCacheDirsSync()
+{
+    const cacheDirs = getCacheDirCandidates();
+
+    for (let dirPath of cacheDirs)
+    {
+        try
+        {
+            const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+            file.initWithPath(dirPath);
+            if (file.exists()) file.remove(true);
+            Zotero.debug('ZotGit Shutdown: forced sync cache removal attempted for ' + dirPath);
+        }
+        catch (e)
+        {
+            Zotero.logError(e);
+            Zotero.debug('ZotGit Shutdown: forced sync cache removal failed for ' + dirPath + ': ' + e.message);
+        }
+    }
 }
 
 async function install()
@@ -58,6 +97,18 @@ async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
     zotmoovBindings = new ZotMoovBindings(zotmoov);
     zotmoovMenus = new ZotMoovMenus(zotmoov, zotmoovBindings, ZotMoovCMUParser);
     zotmoovSync = new ZotMoovGitHubSync(zotmoov, zotmoovMenus, zotmoovDebugger);
+
+    try
+    {
+        Zotero.debug('ZotGit Startup: cleaning leftover cache from previous session');
+        await zotmoovSync.cleanupRemoteCacheOnShutdown();
+        Zotero.debug('ZotGit Startup: leftover cache cleanup complete');
+    }
+    catch (e)
+    {
+        Zotero.logError(e);
+        Zotero.debug('ZotGit Startup: leftover cache cleanup failed: ' + e.message);
+    }
 
     Zotero.PreferencePanes.register(
         {
@@ -146,11 +197,31 @@ function onMainWindowUnload({ window }) {
         const remainingWindows = Zotero.getMainWindows().filter(win => win && win !== window);
         if (remainingWindows.length > 0) return;
 
-        syncFinalized = true;
-        Zotero.debug('ZotGit Shutdown: last main window unloading, running final sync + cache cleanup');
-        zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true }).catch((e) => {
-            Zotero.logError(e);
-        });
+        if (!syncFinalizePromise)
+        {
+            Zotero.debug('ZotGit Shutdown: last main window unloading, running final sync + cache cleanup');
+
+            try
+            {
+                if (zotmoovBindings)
+                {
+                    zotmoovBindings.destroy();
+                    zotmoovBindings = null;
+                }
+            }
+            catch (e)
+            {
+                Zotero.logError(e);
+            }
+
+            syncFinalizePromise = zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true })
+                .catch((e) => {
+                    Zotero.logError(e);
+                })
+                .finally(() => {
+                    syncFinalized = true;
+                });
+        }
     }
     catch (e)
     {
@@ -165,10 +236,20 @@ async function shutdown()
 
     try
     {
-        if (zotmoovSync && !syncFinalized)
+        if (zotmoovSync)
         {
-            syncFinalized = true;
-            await zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true });
+            if (syncFinalizePromise)
+            {
+                await syncFinalizePromise;
+            }
+            else if (!syncFinalized)
+            {
+                syncFinalizePromise = zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true })
+                    .finally(() => {
+                        syncFinalized = true;
+                    });
+                await syncFinalizePromise;
+            }
         }
     }
     catch (e)
@@ -184,6 +265,9 @@ async function shutdown()
     {
         Zotero.logError(e);
     }
+
+    // Final fallback in case async shutdown cleanup raced with app exit/locks.
+    forceRemoveCacheDirsSync();
 
     try
     {
@@ -209,6 +293,7 @@ async function shutdown()
     zotmoovBindings = null;
     zotmoovSync = null;
     syncFinalized = false;
+    syncFinalizePromise = null;
     Zotero.ZotMoov = null;
 
     Zotero.debug('ZotGit Bootstrap: shutdown complete');
