@@ -102,9 +102,6 @@ var ZotMoovBindings = class {
 
                         if (!this.isFileAttachment || !this.isFileAttachment()) return path;
 
-                        if (self._recallScopeDepth <= 0) return path;
-                        if (!self._allowedRecallItemIDs.has(this.id)) return path;
-
                         const sync = Zotero.ZotMoov && Zotero.ZotMoov.Sync ? Zotero.ZotMoov.Sync : null;
                         if (!sync || typeof sync.ensureAttachmentLocal != 'function') return path;
                         if (typeof sync.isRemotePDFModeEnabled == 'function' && !sync.isRemotePDFModeEnabled()) return path;
@@ -189,8 +186,25 @@ var ZotMoovBindings = class {
             return;
         }
 
-        // Do not expand parent items into all attachments here.
-        // Strict recall must only prefetch explicitly requested attachment items.
+        if (input.isRegularItem && input.isRegularItem())
+        {
+            try
+            {
+                const attachmentIDs = input.getAttachments ? input.getAttachments() : [];
+                for (let attachmentID of attachmentIDs)
+                {
+                    const attachment = await Zotero.Items.getAsync(attachmentID);
+                    if (attachment && attachment.isFileAttachment && attachment.isFileAttachment())
+                    {
+                        collector.push(attachment);
+                    }
+                }
+            }
+            catch (e)
+            {
+                Zotero.logError(e);
+            }
+        }
     }
 
     async _prefetchAttachmentsForOpen(args, openContext = null)

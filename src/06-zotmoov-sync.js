@@ -705,26 +705,17 @@ var ZotMoovGitHubSync = class {
         }
 
         const rawAttachmentPath = (item.attachmentPath || '').trim();
-        const normalizedAttachmentPath = rawAttachmentPath.replace(/\//g, '\\');
-
-        let targetLocalPath = null;
-        if (rawAttachmentPath && this._isAbsolutePath(rawAttachmentPath))
-        {
-            targetLocalPath = normalizedAttachmentPath;
-        }
 
         let relative = this._getAttachmentRemoteRelative(item, baseDir);
-        if (!relative && targetLocalPath)
-        {
-            relative = this._normalizeRelativePath(this._getPathBasename(targetLocalPath));
-        }
         if (!relative)
         {
             Zotero.debug('ZotGit Recall: aborted – cannot compute relative path. attachmentPath=' + rawAttachmentPath + ' baseDir=' + baseDir);
             return null;
         }
 
-        const localPath = targetLocalPath || this._remoteRelativeToLocal(baseDir, relative);
+        // Always materialize recalls under the current machine's configured base directory.
+        // Never write to absolute paths that may come from another synced computer.
+        const localPath = this._remoteRelativeToLocal(baseDir, relative);
         if (!localPath)
         {
             Zotero.debug('ZotGit Recall: aborted – cannot resolve local path for ' + relative);
@@ -739,13 +730,16 @@ var ZotMoovGitHubSync = class {
         }
 
         const recallPromise = (async () => {
+            let resolvedRelative = relative;
+            let resolvedLocalPath = localPath;
+
             try
             {
                 // File already in cache – return its path directly
-                if (await IOUtils.exists(localPath))
+                if (await IOUtils.exists(resolvedLocalPath))
                 {
-                    Zotero.debug('ZotGit Recall: cache hit – ' + localPath);
-                    return localPath;
+                    Zotero.debug('ZotGit Recall: cache hit – ' + resolvedLocalPath);
+                    return resolvedLocalPath;
                 }
             }
             catch (e)
@@ -753,10 +747,10 @@ var ZotMoovGitHubSync = class {
                 // continue to download
             }
 
-            Zotero.debug('ZotGit Recall: cache miss – need to download ' + relative + ' to ' + localPath);
+            Zotero.debug('ZotGit Recall: cache miss – need to download ' + resolvedRelative + ' to ' + resolvedLocalPath);
 
-            const remotePath = this._joinRemotePath(this._getPDFRootPath(), relative);
-            this._emitProgress(onProgress, 'Recall: downloading ' + relative);
+            let remotePath = this._joinRemotePath(this._getPDFRootPath(), resolvedRelative);
+            this._emitProgress(onProgress, 'Recall: downloading ' + resolvedRelative);
 
             let remoteFile = null;
             try
@@ -769,7 +763,60 @@ var ZotMoovGitHubSync = class {
             catch (e)
             {
                 Zotero.debug('ZotGit Recall: direct path fetch failed (HTTP ' + (e.status || '?') + ') for ' + remotePath + ' – ' + e.message);
-                return null;
+
+                const fallbackName = this._getPathBasename(resolvedRelative) || this._getPathBasename(rawAttachmentPath);
+                if (!fallbackName)
+                {
+                    return null;
+                }
+
+                let matchedRemotePath = null;
+                try
+                {
+                    matchedRemotePath = await this._findRemotePDFPathByFilename(config, fallbackName, onProgress);
+                }
+                catch (searchError)
+                {
+                    Zotero.debug('ZotGit Recall: filename fallback search failed for ' + fallbackName + ' – ' + searchError.message);
+                }
+
+                if (!matchedRemotePath)
+                {
+                    Zotero.debug('ZotGit Recall: no filename fallback match found for ' + fallbackName);
+                    return null;
+                }
+
+                const pdfRoot = this._getPDFRootPath();
+                let matchedRelative = matchedRemotePath;
+                if (matchedRelative.startsWith(pdfRoot))
+                {
+                    matchedRelative = matchedRelative.substring(pdfRoot.length).replace(/^\/+/, '');
+                }
+                matchedRelative = this._normalizeRelativePath(matchedRelative);
+                if (!matchedRelative)
+                {
+                    Zotero.debug('ZotGit Recall: fallback match produced empty relative path for ' + matchedRemotePath);
+                    return null;
+                }
+
+                resolvedRelative = matchedRelative;
+                resolvedLocalPath = this._remoteRelativeToLocal(baseDir, resolvedRelative);
+                remotePath = this._joinRemotePath(pdfRoot, resolvedRelative);
+
+                this._emitProgress(onProgress, 'Recall: fallback matched ' + resolvedRelative);
+
+                try
+                {
+                    remoteFile = await this._requestJSON(this._buildRepoContentsUrl(config, remotePath, true), {
+                        method: 'GET',
+                        headers: this._getHeaders(config.token)
+                    }, onProgress);
+                }
+                catch (fallbackFetchError)
+                {
+                    Zotero.debug('ZotGit Recall: fallback fetch failed (HTTP ' + (fallbackFetchError.status || '?') + ') for ' + remotePath + ' – ' + fallbackFetchError.message);
+                    return null;
+                }
             }
 
             const bytes = await this._getRemoteFileBytes(remoteFile, remotePath, config, onProgress);
@@ -779,7 +826,7 @@ var ZotMoovGitHubSync = class {
                 return null;
             }
 
-            const parentDir = PathUtils.parent(localPath);
+            const parentDir = PathUtils.parent(resolvedLocalPath);
             try
             {
                 await IOUtils.makeDirectory(parentDir, { createAncestors: true });
@@ -789,10 +836,26 @@ var ZotMoovGitHubSync = class {
                 // already exists
             }
 
-            await IOUtils.write(localPath, bytes);
-            Zotero.debug('ZotGit Recall: successfully wrote ' + bytes.length + ' bytes to ' + localPath);
+            await IOUtils.write(resolvedLocalPath, bytes);
+            Zotero.debug('ZotGit Recall: successfully wrote ' + bytes.length + ' bytes to ' + resolvedLocalPath);
 
-            return localPath;
+            try
+            {
+                const normalizedStoredPath = (item.attachmentPath || '').trim().replace(/\//g, '\\');
+                const normalizedResolvedPath = (resolvedLocalPath || '').trim().replace(/\//g, '\\');
+                if (normalizedResolvedPath && normalizedStoredPath != normalizedResolvedPath)
+                {
+                    item.attachmentPath = resolvedLocalPath;
+                    await item.saveTx();
+                    Zotero.debug('ZotGit Recall: updated attachmentPath to local machine path ' + resolvedLocalPath);
+                }
+            }
+            catch (pathUpdateError)
+            {
+                Zotero.logError(pathUpdateError);
+            }
+
+            return resolvedLocalPath;
         })();
 
         this._attachmentRecallInFlight.set(localPath, recallPromise);
