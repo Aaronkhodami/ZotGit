@@ -1,7 +1,7 @@
 {
     "manifest_version":  2,
     "name":  "ZotGit",
-    "version":  "0.0.30",
+    "version":  "0.0.31",
     "description":  "Mooves attachments and links them",
     "author":  "Khodami Aaron",
     "applications":  {
@@ -9,7 +9,7 @@
                                         "id":  "zotgit@khodami.com",
                                         "update_url":  "https://raw.githubusercontent.com/Aaronkhodami/ZotGit/main/updates.json",
                                         "strict_min_version":  "6.999",
-                                        "strict_max_version":  "8.0.*"
+                                        "strict_max_version":  "9.0.*"
                                     }
                      }
 }

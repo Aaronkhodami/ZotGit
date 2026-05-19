@@ -3,6 +3,12 @@
 ![ZotGit Logo](docs/res/ZotGitLogo.jpg)
 A *simple* plugin for managing attachments in Zotero 7
 
+## Update Information
+
+- 19.05.2026: Now compatible with Zotero 9.0.*
+
+**Please be advised if the PDF folder is not generated in your repo, you need to go to the ZotGit settings and press `Push Now` to generate the PDF folder and the first few files. Then it will work properly.**
+
 ## ℹ️ About ZotGit foundation
 
 ZotGit is based on the foundation of [ZotMoov](https://github.com/wileyyugioh/zotmoov).
