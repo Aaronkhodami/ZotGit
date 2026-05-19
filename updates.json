@@ -3,14 +3,14 @@
     "zotgit@khodami.com": {
       "updates": [
         {
+          "update_link": "https://github.com/Aaronkhodami/ZotGit/releases/download/v0.0.32/zotgit-0.0.32-fx.xpi",
+          "version": "0.0.32",
           "applications": {
             "zotero": {
-              "strict_max_version": "8.0.*",
+              "strict_max_version": "9.0.*",
               "strict_min_version": "6.999"
             }
-          },
-          "version": "0.0.31",
-          "update_link": "https://github.com/Aaronkhodami/ZotGit/releases/download/v0.0.31/zotgit-0.0.31-fx.xpi"
+          }
         }
       ]
     }
