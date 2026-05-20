@@ -157,6 +157,75 @@ async function startup({ id, version, resourceURI, rootURI = resourceURI.spec })
 
     zotmoovSync.configureAutoPushScheduler();
 
+    // Register a shutdown blocker so the final push ALWAYS completes before Zotero exits.
+    // AsyncShutdown.profileBeforeChange is a Mozilla barrier that blocks process exit
+    // until all registered blockers resolve — this is the most reliable shutdown hook.
+    try
+    {
+        let AsyncShutdownMod = null;
+        try
+        {
+            if (typeof ChromeUtils.importESModule == 'function')
+            {
+                AsyncShutdownMod = ChromeUtils.importESModule('resource://gre/modules/AsyncShutdown.sys.mjs');
+            }
+        }
+        catch (e) {}
+
+        if (!AsyncShutdownMod)
+        {
+            try
+            {
+                AsyncShutdownMod = ChromeUtils.import('resource://gre/modules/AsyncShutdown.jsm');
+            }
+            catch (e) {}
+        }
+
+        const AsyncShutdown = AsyncShutdownMod ? AsyncShutdownMod.AsyncShutdown : null;
+
+        if (AsyncShutdown && AsyncShutdown.profileBeforeChange)
+        {
+            AsyncShutdown.profileBeforeChange.addBlocker(
+                'ZotGit: pushing final changes to GitHub',
+                async () =>
+                {
+                    if (syncFinalized || !zotmoovSync) return;
+
+                    Zotero.debug('ZotGit AsyncShutdown: blocker triggered, ensuring final push');
+
+                    if (!syncFinalizePromise)
+                    {
+                        try
+                        {
+                            if (zotmoovBindings)
+                            {
+                                zotmoovBindings.destroy();
+                                zotmoovBindings = null;
+                            }
+                        }
+                        catch (e) { Zotero.logError(e); }
+
+                        syncFinalizePromise = zotmoovSync.destroy({ pushOnShutdown: true, cleanupCacheOnShutdown: true })
+                            .catch((e) => { Zotero.logError(e); })
+                            .finally(() => { syncFinalized = true; });
+                    }
+
+                    await syncFinalizePromise;
+                    Zotero.debug('ZotGit AsyncShutdown: final push complete');
+                }
+            );
+            Zotero.debug('ZotGit Bootstrap: registered AsyncShutdown blocker for guaranteed push on exit');
+        }
+        else
+        {
+            Zotero.debug('ZotGit Bootstrap: AsyncShutdown not available, relying on shutdown() for final push');
+        }
+    }
+    catch (e)
+    {
+        Zotero.debug('ZotGit Bootstrap: AsyncShutdown registration failed (non-fatal): ' + (e.message || e));
+    }
+
     zotmoovMenus.init();
     {
         let windows = Zotero.getMainWindows();

@@ -2,6 +2,7 @@ var ZotMoovGitHubSync = class {
     static get AUTO_PUSH_INTERVAL_MS() { return 10 * 60 * 1000; }
     static get AUTO_PUSH_RETRY_MS() { return 5 * 60 * 1000; }
     static get REQUEST_TIMEOUT_MS() { return 30000; }
+    static get DEBOUNCED_PUSH_DELAY_MS() { return 30 * 1000; }
 
     constructor(zotmoov, zotmoovMenus, debuggerInstance)
     {
@@ -39,6 +40,8 @@ var ZotMoovGitHubSync = class {
         this._destroyed = false;
         this._shutdownCleanupInProgress = false;
         this._attachmentRecallInFlight = new Map();
+        this._dirty = false;
+        this._debouncedPushTimer = null;
 
         // Capture the cache path NOW while Zotero is fully alive.
         // Zotero.DataDirectory may be unavailable at shutdown time.
@@ -59,6 +62,39 @@ var ZotMoovGitHubSync = class {
 
         clearTimeout(this._autoPushTimer);
         this._autoPushTimer = null;
+    }
+
+    _clearDebouncedPushTimer()
+    {
+        if (!this._debouncedPushTimer) return;
+        clearTimeout(this._debouncedPushTimer);
+        this._debouncedPushTimer = null;
+    }
+
+    markDirty()
+    {
+        this._dirty = true;
+        if (this._destroyed) return;
+        if (!this._isAutoPushEnabled()) return;
+
+        this._clearDebouncedPushTimer();
+        this._debouncedPushTimer = setTimeout(() => this._runDebouncedPush(), this.constructor.DEBOUNCED_PUSH_DELAY_MS);
+        Zotero.debug('ZotGit: marked dirty, debounced push scheduled in ' + this.constructor.DEBOUNCED_PUSH_DELAY_MS + 'ms');
+    }
+
+    isDirty()
+    {
+        return this._dirty;
+    }
+
+    async _runDebouncedPush()
+    {
+        this._debouncedPushTimer = null;
+        if (this._destroyed) return;
+        if (!this._isAutoPushEnabled()) return;
+
+        Zotero.debug('ZotGit: running debounced push after item changes');
+        await this.pushToGitHub();
     }
 
     _getShutdownCacheDirs()
@@ -216,6 +252,7 @@ var ZotMoovGitHubSync = class {
     {
         this._destroyed = true;
         this._clearAutoPushTimer();
+        this._clearDebouncedPushTimer();
 
         // Wait for any already-running auto-push to finish before we do our own shutdown push
         if (this._pushPromise)
@@ -1531,6 +1568,7 @@ var ZotMoovGitHubSync = class {
 
             this._emitProgress(onProgress, 'Push: completed');
 
+            this._dirty = false;
             this._debugger.info('GitHub sync push succeeded');
             result = { ok: true, message: 'Push succeeded (' + pdfResult.uploaded + ' PDFs uploaded)' };
         }
