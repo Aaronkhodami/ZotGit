@@ -94,6 +94,17 @@ var ZotMoovNotifyCallback = class {
         try
         {
             await this.lock(this._doExecute.bind(this));
+
+            // Notify sync module that files changed — triggers a debounced push to GitHub
+            try
+            {
+                const sync = Zotero.ZotMoov && Zotero.ZotMoov.Sync ? Zotero.ZotMoov.Sync : null;
+                if (sync && typeof sync.markDirty == 'function')
+                {
+                    sync.markDirty();
+                }
+            }
+            catch (e) {}
         }
         finally
         {
