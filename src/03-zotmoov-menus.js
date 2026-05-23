@@ -19,6 +19,9 @@ var ZotMoovMenus = class
         this.attach_new_file_id = 'zotmoov-context-attach-new-file';
         this.convert_linked_to_stored_id = 'zotmoov-context-convert-linked-to-stored';
         this.fix_note_links_id = 'zotmoov-context-fix-note-links';
+        this.push_button_id = 'zotgit-push-float-button';
+        this.push_toast_id = 'zotgit-push-toast';
+        this.push_style_id = 'zotgit-push-float-style';
 
         this.menuitem_class = 'zotmoov-context-menuitem';
 
@@ -332,6 +335,9 @@ var ZotMoovMenus = class
         {
             this._doKeyDown(event);
         });
+
+        // Floating "Push to GitHub" button
+        this._injectPushButton(win);
     }
 
     setMove()
@@ -366,6 +372,9 @@ var ZotMoovMenus = class
 
         let zotero_itemmenu = doc.getElementById('zotero-itemmenu');
         if (zotero_itemmenu) zotero_itemmenu.removeEventListener('popupshowing', this._popupShowing);
+
+        // Remove floating push button elements
+        this._removePushButton(win);
     }
 
     init()
@@ -448,6 +457,194 @@ var ZotMoovMenus = class
             if(!win.ZoteroPane) continue;
             win.document.getElementById(this.attach_new_file_id).hidden = false;
         }
+    }
+
+    _injectPushButton(win)
+    {
+        const doc = win.document;
+        const self = this;
+
+        // Only show the button when GitHub sync is enabled
+        if (!Zotero.Prefs.get('extensions.zotmoov.sync.github.enabled', true)) return;
+
+        // Inject CSS styles for the floating button and toast
+        if (!doc.getElementById(this.push_style_id))
+        {
+            const style = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style');
+            style.id = this.push_style_id;
+            style.textContent = `
+                #${this.push_button_id} {
+                    position: fixed;
+                    bottom: 24px;
+                    right: 24px;
+                    z-index: 99999;
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    padding: 10px 18px;
+                    background: linear-gradient(135deg, #4a90d9 0%, #357abd 100%);
+                    color: #fff;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    font-size: 13px;
+                    font-weight: 600;
+                    border: none;
+                    border-radius: 10px;
+                    cursor: pointer;
+                    box-shadow: 0 4px 14px rgba(74, 144, 217, 0.45), 0 2px 6px rgba(0, 0, 0, 0.15);
+                    transition: all 0.2s ease;
+                    user-select: none;
+                    line-height: 1;
+                    letter-spacing: 0.3px;
+                }
+                #${this.push_button_id}:hover {
+                    background: linear-gradient(135deg, #5a9fe8 0%, #4a8ad0 100%);
+                    box-shadow: 0 6px 20px rgba(74, 144, 217, 0.55), 0 3px 8px rgba(0, 0, 0, 0.2);
+                    transform: translateY(-2px);
+                }
+                #${this.push_button_id}:active {
+                    transform: translateY(0px);
+                    box-shadow: 0 2px 8px rgba(74, 144, 217, 0.35), 0 1px 3px rgba(0, 0, 0, 0.1);
+                }
+                #${this.push_button_id}.zotgit-pushing {
+                    pointer-events: none;
+                    opacity: 0.85;
+                    background: linear-gradient(135deg, #6b6b6b 0%, #555 100%);
+                    box-shadow: 0 4px 14px rgba(100, 100, 100, 0.35);
+                }
+                #${this.push_button_id} .zotgit-btn-icon {
+                    font-size: 16px;
+                    line-height: 1;
+                }
+                #${this.push_button_id} .zotgit-spinner {
+                    display: inline-block;
+                    width: 14px;
+                    height: 14px;
+                    border: 2px solid rgba(255,255,255,0.35);
+                    border-top-color: #fff;
+                    border-radius: 50%;
+                    animation: zotgit-spin 0.7s linear infinite;
+                }
+                @keyframes zotgit-spin {
+                    to { transform: rotate(360deg); }
+                }
+                #${this.push_toast_id} {
+                    position: fixed;
+                    bottom: 80px;
+                    right: 24px;
+                    z-index: 99999;
+                    padding: 10px 18px;
+                    border-radius: 8px;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                    font-size: 13px;
+                    font-weight: 500;
+                    color: #fff;
+                    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+                    opacity: 0;
+                    transform: translateY(10px);
+                    transition: opacity 0.3s ease, transform 0.3s ease;
+                    pointer-events: none;
+                }
+                #${this.push_toast_id}.zotgit-toast-show {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+                #${this.push_toast_id}.zotgit-toast-success {
+                    background: linear-gradient(135deg, #27ae60 0%, #219a52 100%);
+                }
+                #${this.push_toast_id}.zotgit-toast-error {
+                    background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+                }
+            `;
+            doc.documentElement.appendChild(style);
+        }
+
+        // Create the floating button
+        if (!doc.getElementById(this.push_button_id))
+        {
+            const btn = doc.createElementNS('http://www.w3.org/1999/xhtml', 'button');
+            btn.id = this.push_button_id;
+            btn.title = 'Push changes to GitHub';
+            btn.innerHTML = '<span class="zotgit-btn-icon">⬆</span><span class="zotgit-btn-label">Push to GitHub</span>';
+
+            btn.addEventListener('click', async () =>
+            {
+                if (btn.classList.contains('zotgit-pushing')) return;
+
+                const labelEl = btn.querySelector('.zotgit-btn-label');
+                const iconEl = btn.querySelector('.zotgit-btn-icon');
+
+                btn.classList.add('zotgit-pushing');
+                if (iconEl) iconEl.innerHTML = '<span class="zotgit-spinner"></span>';
+                if (labelEl) labelEl.textContent = 'Pushing…';
+
+                let result = null;
+                try
+                {
+                    const sync = Zotero.ZotMoov && Zotero.ZotMoov.Sync ? Zotero.ZotMoov.Sync : null;
+                    if (!sync) throw new Error('ZotGit sync not available');
+
+                    result = await sync.pushToGitHub();
+                }
+                catch (e)
+                {
+                    result = { ok: false, message: e.message || 'Unknown error' };
+                }
+
+                // Restore button state
+                btn.classList.remove('zotgit-pushing');
+                if (iconEl) iconEl.textContent = '⬆';
+                if (labelEl) labelEl.textContent = 'Push to GitHub';
+
+                // Show toast notification
+                self._showPushToast(win, result && result.ok, result ? result.message : 'Push failed');
+            });
+
+            doc.documentElement.appendChild(btn);
+        }
+
+        // Create the toast element (hidden by default)
+        if (!doc.getElementById(this.push_toast_id))
+        {
+            const toast = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div');
+            toast.id = this.push_toast_id;
+            doc.documentElement.appendChild(toast);
+        }
+    }
+
+    _removePushButton(win)
+    {
+        const doc = win.document;
+        const btn = doc.getElementById(this.push_button_id);
+        if (btn) btn.remove();
+
+        const toast = doc.getElementById(this.push_toast_id);
+        if (toast) toast.remove();
+
+        const style = doc.getElementById(this.push_style_id);
+        if (style) style.remove();
+    }
+
+    _showPushToast(win, success, message)
+    {
+        const doc = win.document;
+        const toast = doc.getElementById(this.push_toast_id);
+        if (!toast) return;
+
+        // Clear any existing timeout
+        if (toast._hideTimeout) clearTimeout(toast._hideTimeout);
+
+        toast.className = '';
+        toast.textContent = success ? '✓ ' + message : '✗ ' + message;
+        toast.classList.add(success ? 'zotgit-toast-success' : 'zotgit-toast-error');
+
+        // Trigger reflow for animation restart
+        void toast.offsetWidth;
+        toast.classList.add('zotgit-toast-show');
+
+        toast._hideTimeout = setTimeout(() =>
+        {
+            toast.classList.remove('zotgit-toast-show');
+        }, 4000);
     }
 
     _getSelectedNotes()
