@@ -1491,13 +1491,13 @@ var ZotMoovGitHubSync = class {
 
             this._emitProgress(onProgress, 'Pull: completed');
 
-            this._debugger.info('GitHub sync pull succeeded');
+            try { this._debugger.info('GitHub sync pull succeeded'); } catch (_) {}
             return { ok: true, message: 'Pull succeeded (' + pdfResult.downloaded + ' PDFs downloaded)' };
         }
         catch (e)
         {
             this._emitProgress(onProgress, 'Pull error: ' + e.message);
-            this._debugger.error('GitHub sync pull failed: ' + e.message);
+            try { this._debugger.error('GitHub sync pull failed: ' + e.message); } catch (_) {}
             return { ok: false, message: e.message };
         }
     }
@@ -1569,13 +1569,13 @@ var ZotMoovGitHubSync = class {
             this._emitProgress(onProgress, 'Push: completed');
 
             this._dirty = false;
-            this._debugger.info('GitHub sync push succeeded');
+            try { this._debugger.info('GitHub sync push succeeded'); } catch (_) {}
             result = { ok: true, message: 'Push succeeded (' + pdfResult.uploaded + ' PDFs uploaded)' };
         }
         catch (e)
         {
             this._emitProgress(onProgress, 'Push error: ' + e.message);
-            this._debugger.error('GitHub sync push failed: ' + e.message);
+            try { this._debugger.error('GitHub sync push failed: ' + e.message); } catch (_) {}
             result = { ok: false, message: e.message };
         }
         finally
