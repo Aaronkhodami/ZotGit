@@ -113,10 +113,14 @@ var ZotMoovNotifyCallback = class {
     }
 
     async addCallback(event, ids, extraData) {
+        // Only queue items for relocation when automove is on, but ALWAYS schedule a pass.
+        // _execute() marks the sync module dirty, which is what triggers the GitHub push.
+        // Returning early here used to mean that a PDF added by hand (drag & drop,
+        // "Add Attachment > Attach Stored Copy of File", opening a PDF for reading, ...)
+        // never scheduled a push, while connector saves still got one because they emit a
+        // follow-up 'modify' event.
         let auto_move = Zotero.Prefs.get('extensions.zotmoov.enable_automove', true);
-        if (!auto_move) return;
-
-        this._item_ids.push(...ids);
+        if (auto_move) this._item_ids.push(...ids);
 
         clearTimeout(this._timeoutID);
         this._timeoutID = setTimeout(this._execute.bind(this), Zotero.Prefs.get('extensions.zotmoov.auto_process_delay', true));

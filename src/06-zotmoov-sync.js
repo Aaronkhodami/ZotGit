@@ -2,6 +2,8 @@ var ZotMoovGitHubSync = class {
     static get AUTO_PUSH_INTERVAL_MS() { return 10 * 60 * 1000; }
     static get AUTO_PUSH_RETRY_MS() { return 5 * 60 * 1000; }
     static get REQUEST_TIMEOUT_MS() { return 30000; }
+    static get MAX_REQUEST_TIMEOUT_MS() { return 10 * 60 * 1000; }
+    static get REQUEST_MAX_ATTEMPTS() { return 4; }
     static get DEBOUNCED_PUSH_DELAY_MS() { return 30 * 1000; }
 
     constructor(zotmoov, zotmoovMenus, debuggerInstance)
@@ -404,6 +406,13 @@ var ZotMoovGitHubSync = class {
             return this._normalizeRelativePath(rawPath.substring('attachments:'.length));
         }
 
+        // Stored attachments live in Zotero's own storage folder and are recorded as
+        // "storage:<filename>". They are synced under their bare filename.
+        if (rawPath.startsWith('storage:'))
+        {
+            return this._normalizeRelativePath(this._getPathBasename(rawPath.substring('storage:'.length)));
+        }
+
         const normalizedRaw = rawPath.replace(/\//g, '\\');
         if (this._isAbsolutePath(rawPath))
         {
@@ -603,12 +612,158 @@ var ZotMoovGitHubSync = class {
         return partial || null;
     }
 
-    async _pushSinglePDF(config, remotePath, bytes, onProgress = null)
+    // Collects every PDF that Zotero itself knows about, regardless of where the file
+    // physically lives. Scanning only the destination directory means a PDF that was never
+    // relocated there (automove off, no destination configured, a linked file kept
+    // elsewhere, a move that failed because the file was locked) is invisible to the push.
+    async _collectAttachmentPDFFiles(baseDir)
     {
-        const content = this._uint8ToBase64(bytes);
-        const url = this._buildRepoContentsUrl(config, remotePath, false);
-        let existingSha = null;
+        let results = [];
 
+        let items = [];
+        try
+        {
+            items = await this._getUserLibraryFileAttachments();
+        }
+        catch (e)
+        {
+            this._debugger.warn('Could not enumerate Zotero attachments for PDF push: ' + e.message);
+            return results;
+        }
+
+        const legacyBase = this._getLegacyLocalDir();
+
+        for (let item of items)
+        {
+            try
+            {
+                if (!item || !item.isFileAttachment || !item.isFileAttachment()) continue;
+                if (item.deleted) continue;
+
+                // getFilePath() is the plain synchronous accessor - unlike getFilePathAsync()
+                // it is not patched for remote recall, so this never triggers a download.
+                const fullPath = item.getFilePath();
+                if (!fullPath) continue;
+                if (!fullPath.toLowerCase().endsWith('.pdf')) continue;
+                if (!(await IOUtils.exists(fullPath))) continue;
+
+                let relative = this._localPathToRemoteRelative(baseDir, fullPath);
+                if (!relative && legacyBase) relative = this._localPathToRemoteRelative(legacyBase, fullPath);
+                if (!relative) relative = this._getPathBasename(fullPath);
+
+                relative = this._normalizeRelativePath(relative);
+                if (!relative) continue;
+
+                results.push({
+                    fullPath: fullPath,
+                    relativePath: relative,
+                    itemKey: item.key || ''
+                });
+            }
+            catch (e)
+            {
+                // A single unreadable attachment must never abort the whole push
+                continue;
+            }
+        }
+
+        return results;
+    }
+
+    async _getUserLibraryFileAttachments()
+    {
+        const libraryID = Zotero.Libraries.userLibraryID;
+
+        try
+        {
+            const ids = await Zotero.DB.columnQueryAsync(
+                'SELECT IA.itemID FROM itemAttachments IA '
+                + 'JOIN items I ON I.itemID = IA.itemID '
+                + 'LEFT JOIN deletedItems DI ON DI.itemID = IA.itemID '
+                + 'WHERE I.libraryID = ? AND DI.itemID IS NULL', [libraryID]);
+
+            if (ids && ids.length) return await Zotero.Items.getAsync(ids);
+            if (ids) return [];
+        }
+        catch (e)
+        {
+            Zotero.debug('ZotGit Push: attachment query failed, falling back to Items.getAll - ' + e.message);
+        }
+
+        const all = await Zotero.Items.getAll(libraryID);
+        return all || [];
+    }
+
+    // Merges the directory scan with the attachment scan. Files are deduplicated by their
+    // real path, and remote paths are kept unique so two different local files can never
+    // overwrite each other in the repository.
+    _mergePDFFileLists(...lists)
+    {
+        let byLocalPath = new Map();
+
+        for (let list of lists)
+        {
+            for (let file of (list || []))
+            {
+                if (!file || !file.fullPath || !file.relativePath) continue;
+
+                const key = file.fullPath.toLowerCase();
+                if (byLocalPath.has(key)) continue;
+
+                byLocalPath.set(key, file);
+            }
+        }
+
+        let usedRemotePaths = new Set();
+        let merged = [];
+
+        for (let file of byLocalPath.values())
+        {
+            let relative = file.relativePath;
+
+            if (usedRemotePaths.has(relative.toLowerCase()))
+            {
+                const suffix = file.itemKey || String(merged.length + 1);
+                relative = this._normalizeRelativePath(suffix + '/' + this._getPathBasename(relative));
+
+                if (usedRemotePaths.has(relative.toLowerCase())) continue;
+            }
+
+            usedRemotePaths.add(relative.toLowerCase());
+            merged.push({
+                fullPath: file.fullPath,
+                relativePath: relative
+            });
+        }
+
+        return merged;
+    }
+
+    // Git blob SHA-1 of the given bytes, so an unchanged file can be skipped instead of
+    // re-uploaded (and re-committed) on every single push. Returns null if unavailable.
+    async _gitBlobSha(bytes)
+    {
+        try
+        {
+            const subtle = (typeof crypto != 'undefined' && crypto && crypto.subtle) ? crypto.subtle : null;
+            if (!subtle || typeof TextEncoder == 'undefined') return null;
+
+            const header = new TextEncoder().encode('blob ' + bytes.length + '\0');
+            const payload = new Uint8Array(header.length + bytes.length);
+            payload.set(header, 0);
+            payload.set(bytes, header.length);
+
+            const digest = await subtle.digest('SHA-1', payload);
+            return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+        catch (e)
+        {
+            return null;
+        }
+    }
+
+    async _getRemotePDFMeta(config, remotePath, onProgress = null)
+    {
         try
         {
             const existing = await this._requestJSON(this._buildRepoContentsUrl(config, remotePath, true), {
@@ -616,25 +771,76 @@ var ZotMoovGitHubSync = class {
                 headers: this._getHeaders(config.token)
             }, onProgress);
 
-            existingSha = existing && existing.sha ? existing.sha : null;
+            if (!existing || Array.isArray(existing)) return null;
+
+            return {
+                sha: existing.sha || null,
+                size: (typeof existing.size == 'number') ? existing.size : null
+            };
         }
         catch (e)
         {
-            if (e.status != 404) throw e;
+            if (e.status == 404) return null;
+            throw e;
+        }
+    }
+
+    async _pushSinglePDF(config, remotePath, bytes, onProgress = null)
+    {
+        const content = this._uint8ToBase64(bytes);
+        const url = this._buildRepoContentsUrl(config, remotePath, false);
+
+        let meta = await this._getRemotePDFMeta(config, remotePath, onProgress);
+
+        if (meta && meta.sha)
+        {
+            const localSha = await this._gitBlobSha(bytes);
+            if (localSha)
+            {
+                if (localSha == meta.sha) return { uploaded: false, reason: 'unchanged' };
+            }
+            else if (meta.size !== null && meta.size == bytes.length)
+            {
+                // No SHA-1 available in this scope - identical size is our best proxy
+                return { uploaded: false, reason: 'unchanged' };
+            }
         }
 
-        const body = {
-            message: 'ZotGit PDF sync update: ' + remotePath,
-            content,
-            branch: config.branch
-        };
-        if (existingSha) body.sha = existingSha;
+        const MAX_SHA_RETRIES = 3;
+        for (let attempt = 0; attempt <= MAX_SHA_RETRIES; attempt++)
+        {
+            const body = {
+                message: 'ZotGit PDF sync update: ' + remotePath,
+                content,
+                branch: config.branch
+            };
+            if (meta && meta.sha) body.sha = meta.sha;
 
-        await this._requestJSON(url, {
-            method: 'PUT',
-            headers: this._getHeaders(config.token),
-            body: JSON.stringify(body)
-        }, onProgress);
+            try
+            {
+                await this._requestJSON(url, {
+                    method: 'PUT',
+                    headers: this._getHeaders(config.token),
+                    body: JSON.stringify(body)
+                }, onProgress);
+
+                return { uploaded: true };
+            }
+            catch (e)
+            {
+                const isShaConflict = (e.status == 409 || e.status == 422);
+                if (!isShaConflict || attempt >= MAX_SHA_RETRIES) throw e;
+
+                this._emitProgress(onProgress, 'Push: ' + remotePath + ' changed remotely, retrying...');
+                await this._delay(1000 * (attempt + 1));
+
+                const namedSha = this._extractShaFromError(e);
+                if (namedSha && (!meta || namedSha != meta.sha)) meta = { sha: namedSha, size: null };
+                else meta = await this._getRemotePDFMeta(config, remotePath, onProgress);
+            }
+        }
+
+        return { uploaded: false, reason: 'retries exhausted' };
     }
 
     async _pushPDFFiles(config, onProgress = null)
@@ -642,7 +848,7 @@ var ZotMoovGitHubSync = class {
         if (!this._isPDFSyncEnabled())
         {
             this._emitProgress(onProgress, 'Push: PDF sync disabled');
-            return { uploaded: 0 };
+            return { uploaded: 0, skipped: 0, failed: 0 };
         }
 
         const baseDir = this._getLocalPDFBaseDir();
@@ -654,25 +860,55 @@ var ZotMoovGitHubSync = class {
         {
             // already exists
         }
-        this._emitProgress(onProgress, 'Push: scanning local PDFs from ' + baseDir);
 
-        const files = await this._collectLocalPDFFiles(baseDir);
+        this._emitProgress(onProgress, 'Push: scanning local PDFs from ' + baseDir);
+        const dirFiles = await this._collectLocalPDFFiles(baseDir);
+
+        this._emitProgress(onProgress, 'Push: scanning Zotero attachments for PDFs');
+        const attachmentFiles = await this._collectAttachmentPDFFiles(baseDir);
+
+        const files = this._mergePDFFileLists(dirFiles, attachmentFiles);
         const pdfRoot = this._getPDFRootPath();
-        this._emitProgress(onProgress, 'Push: found ' + files.length + ' PDF files');
+        this._emitProgress(onProgress, 'Push: found ' + files.length + ' PDF files ('
+            + dirFiles.length + ' in the sync folder, ' + attachmentFiles.length + ' attached in Zotero)');
 
         let uploaded = 0;
+        let skipped = 0;
+        let failed = 0;
+
         for (let file of files)
         {
             const remotePath = this._joinRemotePath(pdfRoot, file.relativePath);
-            this._emitProgress(onProgress, 'Push: uploading PDF ' + file.relativePath);
 
-            const bytes = await IOUtils.read(file.fullPath);
-            await this._pushSinglePDF(config, remotePath, bytes, onProgress);
-            uploaded += 1;
+            try
+            {
+                const bytes = await IOUtils.read(file.fullPath);
+                const result = await this._pushSinglePDF(config, remotePath, bytes, onProgress);
+
+                if (result && result.uploaded)
+                {
+                    uploaded += 1;
+                    this._emitProgress(onProgress, 'Push: uploaded PDF ' + file.relativePath);
+                }
+                else
+                {
+                    skipped += 1;
+                    this._emitProgress(onProgress, 'Push: PDF already up to date ' + file.relativePath);
+                }
+            }
+            catch (e)
+            {
+                // One bad file must not stop the remaining uploads
+                failed += 1;
+                this._emitProgress(onProgress, 'Push: FAILED to upload ' + file.relativePath + ' - ' + e.message);
+                this._debugger.warn('PDF upload failed for ' + file.relativePath + ': ' + e.message);
+            }
         }
 
-        this._emitProgress(onProgress, 'Push: uploaded ' + uploaded + ' PDF files');
-        return { uploaded };
+        this._emitProgress(onProgress, 'Push: uploaded ' + uploaded + ' PDF files ('
+            + skipped + ' unchanged, ' + failed + ' failed)');
+
+        return { uploaded, skipped, failed };
     }
 
     async _cleanupLocalPDFCache(onProgress = null)
@@ -1242,136 +1478,231 @@ var ZotMoovGitHubSync = class {
         return {
             'Accept': 'application/vnd.github+json',
             'Authorization': 'Bearer ' + token,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            // GitHub serves authenticated GETs with "Cache-Control: private, max-age=60".
+            // Without this, re-reading a file's SHA after a 409 returns the stale cached
+            // SHA, so every retry resends the same wrong value and the push can never
+            // recover. Always go to the network for the current state.
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
         };
     }
 
-    async _requestJSON(url, options, onProgress = null)
+    // A 30 second ceiling is fine for a metadata call but kills a large PDF upload
+    // mid-flight on a slow link, which surfaced as a random "timed out" push failure.
+    // Give every request a size-proportional allowance instead.
+    _getRequestTimeout(options)
     {
-        const hasAbortController = (typeof AbortController != 'undefined');
-        const controller = hasAbortController ? new AbortController() : null;
-        let hardTimeoutID = null;
+        let size = 0;
+        const body = options ? options.body : null;
 
-        let response = null;
-        let body = null;
+        if (typeof body == 'string') size = body.length;
+        else if (body && typeof body.byteLength == 'number') size = body.byteLength;
 
-        try
+        if (!size) return this.constructor.REQUEST_TIMEOUT_MS;
+
+        // Assume a worst case of ~50 KB/s so a slow connection still gets to finish
+        const allowance = Math.ceil(size / (50 * 1024)) * 1000;
+
+        return Math.min(this.constructor.MAX_REQUEST_TIMEOUT_MS,
+            this.constructor.REQUEST_TIMEOUT_MS + allowance);
+    }
+
+    // Turns a bare HTTP status into something a user can act on, instead of the
+    // "GitHub request failed (403)" style message that reads like a random number.
+    _describeHTTPError(status, body, headers)
+    {
+        const detail = (body && body.message) ? String(body.message) : '';
+        const remaining = headers && typeof headers.get == 'function' ? headers.get('x-ratelimit-remaining') : null;
+        let message = '';
+
+        switch (status)
         {
-            this._emitProgress(onProgress, 'Request: ' + (options.method || 'GET') + ' ' + url);
+            case 401:
+                message = 'GitHub rejected the token (401). The Personal Access Token is wrong, was revoked, or has expired.';
+                break;
+            case 403:
+                message = (/rate limit|abuse detection/i.test(detail) || remaining == '0')
+                    ? 'GitHub rate limit reached (403). ZotGit will retry automatically; if it keeps failing, wait a few minutes.'
+                    : 'GitHub refused the request (403). The token most likely lacks "Contents: Read and write" access to this repository.';
+                break;
+            case 404:
+                message = 'Not found (404). Check the repository name, the branch, and that the token can see that repository.';
+                break;
+            case 409:
+                message = 'The repository changed while pushing (409). ZotGit retries this automatically.';
+                break;
+            case 422:
+                message = 'GitHub rejected the update (422). This usually means the file changed on the remote since it was last read.';
+                break;
+            case 429:
+                message = 'Too many requests (429). ZotGit will back off and retry.';
+                break;
+            default:
+                message = (status >= 500)
+                    ? 'GitHub is having trouble (' + status + '). This is on their side; ZotGit will retry.'
+                    : 'GitHub request failed (' + status + ').';
+        }
 
-            const timeoutPromise = new Promise((_, reject) => {
-                hardTimeoutID = setTimeout(() => {
-                    if (controller) controller.abort();
-                    reject(new Error('GitHub request timed out after 30 seconds'));
-                }, this.constructor.REQUEST_TIMEOUT_MS);
-            });
+        if (detail && !message.includes(detail)) message += ' - ' + detail;
 
-            const fetchOptions = {
-                ...options
-            };
-            if (controller) fetchOptions.signal = controller.signal;
+        return message;
+    }
 
-            response = await Promise.race([
-                fetch(url, fetchOptions),
-                timeoutPromise
-            ]);
+    // 409/422 are deliberately NOT retried here: the callers re-read the file SHA and
+    // retry themselves, which is the only way those can actually succeed.
+    _isRetryableHTTP(status, body, headers)
+    {
+        if (status == 429) return true;
+        if (status >= 500 && status < 600) return true;
 
-            this._emitProgress(onProgress, 'Response: HTTP ' + response.status);
+        if (status == 403)
+        {
+            const detail = (body && body.message) ? String(body.message) : '';
+            if (/secondary rate limit|abuse detection|rate limit/i.test(detail)) return true;
+            if (headers && typeof headers.get == 'function' && headers.get('retry-after')) return true;
+        }
 
-            const text = await response.text();
-            if (text)
+        return false;
+    }
+
+    _getRetryDelayMs(attempt, headers)
+    {
+        if (headers && typeof headers.get == 'function')
+        {
+            const retryAfter = headers.get('retry-after');
+            if (retryAfter)
             {
+                const seconds = parseInt(retryAfter, 10);
+                if (!isNaN(seconds) && seconds > 0) return Math.min(60000, seconds * 1000);
+            }
+        }
+
+        return Math.min(30000, 1000 * Math.pow(2, attempt));
+    }
+
+    async _requestRaw(url, options, onProgress, mode)
+    {
+        const maxAttempts = this.constructor.REQUEST_MAX_ATTEMPTS;
+        const label = (mode == 'bytes') ? 'Request(bytes): ' : 'Request: ';
+        let lastError = null;
+
+        for (let attempt = 0; attempt < maxAttempts; attempt++)
+        {
+            const hasAbortController = (typeof AbortController != 'undefined');
+            const controller = hasAbortController ? new AbortController() : null;
+            const timeoutMs = this._getRequestTimeout(options);
+            const timeoutSeconds = Math.round(timeoutMs / 1000);
+            let hardTimeoutID = null;
+
+            try
+            {
+                this._emitProgress(onProgress, label + (options.method || 'GET') + ' ' + url
+                    + (attempt > 0 ? ' (attempt ' + (attempt + 1) + '/' + maxAttempts + ')' : ''));
+
+                const timeoutPromise = new Promise((_, reject) => {
+                    hardTimeoutID = setTimeout(() => {
+                        if (controller) controller.abort();
+
+                        const timeoutError = new Error('GitHub request timed out after ' + timeoutSeconds + ' seconds');
+                        timeoutError.isTimeout = true;
+                        reject(timeoutError);
+                    }, timeoutMs);
+                });
+
+                const fetchOptions = { ...options };
+                if (controller) fetchOptions.signal = controller.signal;
+                if (!fetchOptions.cache) fetchOptions.cache = 'no-store';
+
+                const response = await Promise.race([
+                    fetch(url, fetchOptions),
+                    timeoutPromise
+                ]);
+
+                this._emitProgress(onProgress, 'Response: HTTP ' + response.status);
+
+                if (response.ok)
+                {
+                    if (mode == 'bytes')
+                    {
+                        const arrayBuffer = await response.arrayBuffer();
+                        return new Uint8Array(arrayBuffer);
+                    }
+
+                    const text = await response.text();
+                    if (!text) return null;
+
+                    try
+                    {
+                        return JSON.parse(text);
+                    }
+                    catch (e)
+                    {
+                        return null;
+                    }
+                }
+
+                let body = null;
                 try
                 {
-                    body = JSON.parse(text);
+                    const errorText = await response.text();
+                    if (errorText) body = JSON.parse(errorText);
                 }
                 catch (e)
                 {
                     body = null;
                 }
+
+                const httpError = new Error(this._describeHTTPError(response.status, body, response.headers));
+                httpError.status = response.status;
+
+                if (attempt + 1 < maxAttempts && this._isRetryableHTTP(response.status, body, response.headers))
+                {
+                    const delay = this._getRetryDelayMs(attempt, response.headers);
+                    this._emitProgress(onProgress, 'Retrying in ' + Math.round(delay / 1000) + 's - ' + httpError.message);
+                    lastError = httpError;
+                    await this._delay(delay);
+                    continue;
+                }
+
+                throw httpError;
             }
-        }
-        catch (e)
-        {
-            if (e && e.name == 'AbortError')
+            catch (e)
             {
-                throw new Error('GitHub request timed out after 30 seconds');
+                // An HTTP status we already decided not to retry
+                if (e && e.status) throw e;
+
+                let transportError = e;
+                if (e && e.name == 'AbortError' && !e.isTimeout)
+                {
+                    transportError = new Error('GitHub request timed out after ' + timeoutSeconds + ' seconds');
+                }
+
+                if (attempt + 1 >= maxAttempts) throw transportError;
+
+                const delay = this._getRetryDelayMs(attempt, null);
+                this._emitProgress(onProgress, 'Connection problem (' + transportError.message
+                    + '); retrying in ' + Math.round(delay / 1000) + 's');
+                lastError = transportError;
+                await this._delay(delay);
             }
-
-            throw e;
-        }
-        finally
-        {
-            if (hardTimeoutID) clearTimeout(hardTimeoutID);
+            finally
+            {
+                if (hardTimeoutID) clearTimeout(hardTimeoutID);
+            }
         }
 
-        if (!response.ok)
-        {
-            let message = 'GitHub request failed (' + response.status + ')';
-            if (body && body.message) message += ': ' + body.message;
+        throw lastError || new Error('GitHub request failed');
+    }
 
-            const error = new Error(message);
-            error.status = response.status;
-            throw error;
-        }
-
-        return body;
+    async _requestJSON(url, options, onProgress = null)
+    {
+        return await this._requestRaw(url, options, onProgress, 'json');
     }
 
     async _requestBytes(url, options, onProgress = null)
     {
-        const hasAbortController = (typeof AbortController != 'undefined');
-        const controller = hasAbortController ? new AbortController() : null;
-        let hardTimeoutID = null;
-
-        let response = null;
-
-        try
-        {
-            this._emitProgress(onProgress, 'Request(bytes): ' + (options.method || 'GET') + ' ' + url);
-
-            const timeoutPromise = new Promise((_, reject) => {
-                hardTimeoutID = setTimeout(() => {
-                    if (controller) controller.abort();
-                    reject(new Error('GitHub byte request timed out after 30 seconds'));
-                }, this.constructor.REQUEST_TIMEOUT_MS);
-            });
-
-            const fetchOptions = {
-                ...options
-            };
-            if (controller) fetchOptions.signal = controller.signal;
-
-            response = await Promise.race([
-                fetch(url, fetchOptions),
-                timeoutPromise
-            ]);
-
-            this._emitProgress(onProgress, 'Response(bytes): HTTP ' + response.status);
-        }
-        catch (e)
-        {
-            if (e && e.name == 'AbortError')
-            {
-                throw new Error('GitHub byte request timed out after 30 seconds');
-            }
-
-            throw e;
-        }
-        finally
-        {
-            if (hardTimeoutID) clearTimeout(hardTimeoutID);
-        }
-
-        if (!response.ok)
-        {
-            const error = new Error('GitHub byte request failed (' + response.status + ')');
-            error.status = response.status;
-            throw error;
-        }
-
-        const arrayBuffer = await response.arrayBuffer();
-        return new Uint8Array(arrayBuffer);
+        return await this._requestRaw(url, options, onProgress, 'bytes');
     }
 
     async _getRemoteFileBytes(remoteFile, remotePath, config, onProgress = null)
@@ -1444,6 +1775,18 @@ var ZotMoovGitHubSync = class {
         }
 
         return url;
+    }
+
+    // GitHub answers a stale update with e.g.
+    //   "zotgit-settings.json does not match 37de5b33778ac52411d8765d9e8b006bedde0d6c"
+    // where that hash is the SHA the file actually has right now. Using it lets a push
+    // recover even if the follow-up read is somehow still stale.
+    _extractShaFromError(error)
+    {
+        if (!error || !error.message) return null;
+
+        const match = String(error.message).match(/\b[0-9a-f]{40}\b/);
+        return match ? match[0] : null;
     }
 
     _markSyncSuccess(remoteSha = '')
@@ -1529,36 +1872,76 @@ var ZotMoovGitHubSync = class {
 
             const contentUrl = this._buildContentUrl(config, false);
 
-            let existingSha = null;
-            try
+            // Retry loop: if the SHA becomes stale between our GET and PUT
+            // (e.g. another push landed in between), re-fetch and retry.
+            const MAX_SHA_RETRIES = 3;
+            let uploadResult = null;
+            let knownSha = null;
+
+            for (let attempt = 0; attempt <= MAX_SHA_RETRIES; attempt++)
             {
-                this._emitProgress(onProgress, 'Push: checking remote file state');
-                const existing = await this._requestJSON(this._buildContentUrl(config, true), {
-                    method: 'GET',
-                    headers: this._getHeaders(config.token)
-                }, onProgress);
+                let existingSha = knownSha;
 
-                existingSha = existing.sha || null;
+                if (!existingSha)
+                {
+                    try
+                    {
+                        this._emitProgress(onProgress, 'Push: checking remote file state' + (attempt > 0 ? ' (retry ' + attempt + ')' : ''));
+                        const existing = await this._requestJSON(this._buildContentUrl(config, true), {
+                            method: 'GET',
+                            headers: this._getHeaders(config.token)
+                        }, onProgress);
+
+                        existingSha = existing.sha || null;
+                    }
+                    catch (e)
+                    {
+                        if (e.status != 404) throw e;
+                        this._emitProgress(onProgress, 'Push: remote file does not exist yet, creating new file');
+                    }
+                }
+
+                const body = {
+                    message: 'ZotGit settings sync update',
+                    content: content,
+                    branch: config.branch
+                };
+                if (existingSha) body.sha = existingSha;
+
+                try
+                {
+                    this._emitProgress(onProgress, 'Push: uploading settings file' + (attempt > 0 ? ' (retry ' + attempt + ')' : ''));
+                    uploadResult = await this._requestJSON(contentUrl, {
+                        method: 'PUT',
+                        headers: this._getHeaders(config.token),
+                        body: JSON.stringify(body)
+                    }, onProgress);
+
+                    // Success — break out of the retry loop
+                    break;
+                }
+                catch (e)
+                {
+                    // 409 Conflict or 422 Unprocessable = SHA mismatch
+                    const isShaConflict = (e.status == 409 || e.status == 422);
+                    if (isShaConflict && attempt < MAX_SHA_RETRIES)
+                    {
+                        // Prefer the SHA GitHub named in the rejection; fall back to a fresh read
+                        knownSha = this._extractShaFromError(e);
+                        if (knownSha == existingSha) knownSha = null;
+
+                        Zotero.debug('ZotGit Push: SHA mismatch (HTTP ' + e.status + '), retrying with '
+                            + (knownSha ? 'SHA from GitHub ' + knownSha : 'a fresh read')
+                            + ' (attempt ' + (attempt + 1) + '/' + MAX_SHA_RETRIES + ')');
+                        this._emitProgress(onProgress, 'Push: settings file changed remotely, retrying...');
+                        await this._delay(1000 * (attempt + 1));
+                        continue;
+                    }
+
+                    // Not a SHA conflict, or we exhausted retries - rethrow
+                    throw e;
+                }
             }
-            catch (e)
-            {
-                if (e.status != 404) throw e;
-                this._emitProgress(onProgress, 'Push: remote file does not exist yet, creating new file');
-            }
-
-            const body = {
-                message: 'ZotGit settings sync update',
-                content: content,
-                branch: config.branch
-            };
-            if (existingSha) body.sha = existingSha;
-
-            this._emitProgress(onProgress, 'Push: uploading settings file');
-            const uploadResult = await this._requestJSON(contentUrl, {
-                method: 'PUT',
-                headers: this._getHeaders(config.token),
-                body: JSON.stringify(body)
-            }, onProgress);
 
             const sha = uploadResult && uploadResult.content ? uploadResult.content.sha || '' : '';
             this._markSyncSuccess(sha);
@@ -1570,7 +1953,11 @@ var ZotMoovGitHubSync = class {
 
             this._dirty = false;
             try { this._debugger.info('GitHub sync push succeeded'); } catch (_) {}
-            result = { ok: true, message: 'Push succeeded (' + pdfResult.uploaded + ' PDFs uploaded)' };
+            let pdfSummary = pdfResult.uploaded + ' PDFs uploaded';
+            if (pdfResult.skipped) pdfSummary += ', ' + pdfResult.skipped + ' unchanged';
+            if (pdfResult.failed) pdfSummary += ', ' + pdfResult.failed + ' failed';
+
+            result = { ok: true, message: 'Push succeeded (' + pdfSummary + ')' };
         }
         catch (e)
         {

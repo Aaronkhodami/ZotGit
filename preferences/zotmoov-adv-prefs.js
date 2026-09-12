@@ -535,16 +535,28 @@ class ZotMoovAdvancedPrefs {
             return;
         }
 
-        this._setSyncButtonsDisabled(true);
-        this._setSyncStatus('zotmoov-adv-settings-sync-status-pushing');
-        const result = await Zotero.ZotMoov.Sync.pushToGitHub();
+        try
+        {
+            this._setSyncButtonsDisabled(true);
+            this._setSyncStatus('zotmoov-adv-settings-sync-status-pushing');
+            const result = await Zotero.ZotMoov.Sync.pushToGitHub();
 
-        this._setSyncStatus(result.ok ? 'zotmoov-adv-settings-sync-status-success' : 'zotmoov-adv-settings-sync-status-failed');
+            this._setSyncStatus(result.ok ? 'zotmoov-adv-settings-sync-status-success' : 'zotmoov-adv-settings-sync-status-failed');
 
-        const status = document.getElementById('zotmoov-adv-settings-sync-status');
-        if (status) status.setAttribute('tooltiptext', result.message || '');
+            const status = document.getElementById('zotmoov-adv-settings-sync-status');
+            if (status) status.setAttribute('tooltiptext', result.message || '');
+        }
+        catch (e)
+        {
+            this._setSyncStatus('zotmoov-adv-settings-sync-status-failed');
 
-        this._setSyncButtonsDisabled(false);
+            const status = document.getElementById('zotmoov-adv-settings-sync-status');
+            if (status) status.setAttribute('tooltiptext', e.message || 'Unexpected push error');
+        }
+        finally
+        {
+            this._setSyncButtonsDisabled(false);
+        }
     }
 
     async pickSearchDirectory()

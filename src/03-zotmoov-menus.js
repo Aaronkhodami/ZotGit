@@ -635,6 +635,8 @@ var ZotMoovMenus = class
 
         toast.className = '';
         toast.textContent = success ? '✓ ' + message : '✗ ' + message;
+        // Failures are often long and actionable - keep the full text available on hover
+        toast.setAttribute('title', message || '');
         toast.classList.add(success ? 'zotgit-toast-success' : 'zotgit-toast-error');
 
         // Trigger reflow for animation restart
@@ -644,7 +646,7 @@ var ZotMoovMenus = class
         toast._hideTimeout = setTimeout(() =>
         {
             toast.classList.remove('zotgit-toast-show');
-        }, 4000);
+        }, success ? 4000 : 12000);
     }
 
     _getSelectedNotes()

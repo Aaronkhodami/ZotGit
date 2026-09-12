@@ -1,9 +1,10 @@
 # ZotGit
 
 ![ZotGit Logo](docs/res/ZotGitLogo.jpg)
-A *simple* plugin for managing attachments in Zotero 7
+A *simple* plugin for managing attachments in Zotero
 
 ## Update Information
+- 12.09.2026: Bug fixes - locally attached PDFs are now synced too; minor fixes and improvements
 - **25.08.2026: Now compatible with Zotero version 10.**
 - 19.05.2026: Now compatible with Zotero 9.0.*
 
